@@ -28,8 +28,8 @@ export default {
       }
 
       const [profileRes, groupsRes] = await Promise.all([
-        fetch(`https://users.roblox.com{userId}`),
-        fetch(`https://groups.roblox.com{userId}/groups/roles`)
+        fetch(`https://users.roblox.com/v1/users/${userId}`),
+        fetch(`https://groups.roblox.com/v1/users/${userId}/groups/roles`)
       ]);
 
       const profile = await profileRes.json();
