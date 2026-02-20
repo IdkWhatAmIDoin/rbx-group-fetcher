@@ -1,4 +1,3 @@
-// ----- Helper functions -----
 function corsify(response) {
   const newHeaders = new Headers(response.headers);
   newHeaders.set("Access-Control-Allow-Origin", "*");
@@ -44,11 +43,8 @@ function normalizeBoolean(value, defaultValue) {
   if (typeof value === 'number') return value !== 0;
   return defaultValue;
 }
-
-// ----- Main worker -----
 export default {
   async fetch(request) {
-    // Handle CORS preflight (must come first)
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
@@ -60,30 +56,17 @@ export default {
     }
 
     const url = new URL(request.url);
-
-    // Health check endpoint (optional)
     if (url.pathname === "/health") {
       return corsify(new Response("OK", { status: 200 }));
     }
-
-    // Browser GET redirect (or plain error – choose one)
     if (request.method === "GET") {
       const userAgent = request.headers.get("User-Agent") || "";
       if (isBrowser(userAgent)) {
-        // Option A: Redirect to your Pages site
-        // return corsify(Response.redirect("https://rblx-uif-site.pages.dev", 302));
-
-        // Option B: Keep the plain text error (but you'll need CORS headers)
-        return corsify(new Response(
-          "This endpoint is for API requests only. Please send a POST request with JSON or form data. Do not open in a browser.",
-          { status: 400, headers: { "Content-Type": "text/plain" } }
-        ));
+        return corsify(Response.redirect("https://rblx-uif-site.pages.dev", 302));
       }
     }
 
     const userAgent = request.headers.get("User-Agent") || "";
-
-    // Geometry Dash easter egg
     if (userAgent.toLowerCase().includes("geometrydash")) {
       return corsify(new Response(
         JSON.stringify({
@@ -92,8 +75,6 @@ export default {
         { status: 200, headers: { "Content-Type": "application/json" } }
       ));
     }
-
-    // Only POST allowed for API
     if (request.method !== "POST") {
       return corsify(new Response(
         JSON.stringify({ error: "Check if you're not using POST." }),
@@ -113,8 +94,6 @@ export default {
       const includeFollowersCount = normalizeBoolean(body.includeFollowersCount, false);
       const includeFollowingCount = normalizeBoolean(body.includeFollowingCount, false);
       const includeGroups = normalizeBoolean(body.includeGroups, true);
-
-      // Username lookup if needed
       if (!userId && username) {
         const userRes = await fetch("https://users.roblox.com/v1/usernames/users", {
           method: "POST",
@@ -147,8 +126,6 @@ export default {
         ));
       }
       const profile = await profileRes.json();
-
-      // Build promises for optional data
       const promises = [];
       const promiseKeys = [];
 
@@ -185,10 +162,6 @@ export default {
       let groupsData = null, avatarData = null, presenceData = null;
       let friendsCountData = null, followersCountData = null, followingCountData = null;
 
-      // Note: This approach is flawed because json() is async but we're not awaiting.
-      // You should either use Promise.all or handle properly. For now, we'll keep it as is,
-      // but consider refactoring. The original had a setTimeout hack; we'll preserve that.
-
       results.forEach((result, index) => {
         if (result.status === 'fulfilled') {
           const key = promiseKeys[index];
@@ -204,7 +177,7 @@ export default {
           }).catch(() => {});
         }
       });
-      await new Promise(resolve => setTimeout(resolve, 100)); // ugly but works
+      await new Promise(resolve => setTimeout(resolve, 100)); 
 
       const response = {
         id: profile.id,
