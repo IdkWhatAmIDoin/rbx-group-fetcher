@@ -1,6 +1,6 @@
 # Roblox User Info Fetcher
-![]([https://img.shields.io/badge/currently-up-green](https://img.shields.io/uptimerobot/status/m802389550-7ffc850247cff37f1ea4e6f9?up_message=up&up_color=green&down_message=down%2C%20the%20error%20will%20be%20fixed%20soon&down_color=red&style=flat)
-))
+![](https://img.shields.io/uptimerobot/status/m802389550-7ffc850247cff37f1ea4e6f9?up_message=up&up_color=green&down_message=down%2C%20the%20error%20will%20be%20fixed%20soon&down_color=red&style=flat)
+
 
 This is a thing I made recently that combines some API's into one.
 
