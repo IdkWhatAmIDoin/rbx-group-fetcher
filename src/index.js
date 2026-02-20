@@ -1,27 +1,86 @@
+function corsify(response) {
+  const newHeaders = new Headers(response.headers);
+  newHeaders.set("Access-Control-Allow-Origin", "*");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: newHeaders,
+  });
+}
+
+function isBrowser(userAgent) {
+  const browserPatterns = [
+    "Mozilla", "Chrome", "Safari", "Edge", "Opera",
+    "MSIE", "Trident", "Firefox"
+  ];
+  return browserPatterns.some(pattern => userAgent.includes(pattern));
+}
+
+async function parseBody(request) {
+  const contentType = request.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    return await request.json();
+  } else if (contentType.includes('application/x-www-form-urlencoded') || contentType.includes('multipart/form-data')) {
+    const formData = await request.formData();
+    const obj = {};
+    for (const [key, value] of formData.entries()) {
+      obj[key] = value;
+    }
+    return obj;
+  } else {
+    throw new Error('Unsupported content type. Please use JSON or form data.');
+  }
+}
+
+function normalizeBoolean(value, defaultValue) {
+  if (value === undefined || value === null) return defaultValue;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const lower = value.toLowerCase();
+    if (lower === 'true' || lower === '1' || lower === 'on') return true;
+    if (lower === 'false' || lower === '0' || lower === 'off') return false;
+  }
+  if (typeof value === 'number') return value !== 0;
+  return defaultValue;
+}
 export default {
   async fetch(request) {
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type",
+        },
+      });
+    }
+
     const url = new URL(request.url);
     if (url.pathname === "/health") {
-      return new Response("OK", { status: 200 });
+      return corsify(new Response("OK", { status: 200 }));
     }
-    const userAgent = request.headers.get("User-Agent") || "";
     if (request.method === "GET") {
       const userAgent = request.headers.get("User-Agent") || "";
       if (isBrowser(userAgent)) {
-        return Response.redirect("https://rblx-uif-site.pages.dev", 302);
+        return corsify(Response.redirect("https://rblx-uif-site.pages.dev", 302));
+      main
       }
     }
 
+    const userAgent = request.headers.get("User-Agent") || "";
     if (userAgent.toLowerCase().includes("geometrydash")) {
-      return new Response(
+      return corsify(new Response(
         JSON.stringify({
           whatTheActualFuckBroQuestionMarkQuestionMark: "are you fucking launching this from GEOMETRY DASH????"
         }),
         { status: 200, headers: { "Content-Type": "application/json" } }
-      );
+      ));
     }
     if (request.method !== "POST") {
-      return new Response(JSON.stringify({ error: "Check if you're not using POST." }), { status: 405 });
+      return corsify(new Response(
+        JSON.stringify({ error: "Check if you're not using POST." }),
+        { status: 405, headers: { "Content-Type": "application/json" } }
+      ));
     }
     if (request.method === "OPTIONS") {
       return new Response(null, {
@@ -44,8 +103,7 @@ export default {
       const includeFriendsCount = normalizeBoolean(body.includeFriendsCount, false);
       const includeFollowersCount = normalizeBoolean(body.includeFollowersCount, false);
       const includeFollowingCount = normalizeBoolean(body.includeFollowingCount, false);
-      const includeGroups = normalizeBoolean(body.includeGroups, true); // default true
-
+      const includeGroups = normalizeBoolean(body.includeGroups, true);
       if (!userId && username) {
         const userRes = await fetch("https://users.roblox.com/v1/usernames/users", {
           method: "POST",
@@ -56,20 +114,28 @@ export default {
         if (userData.data && userData.data.length > 0) {
           userId = userData.data[0].id;
         } else {
-          return new Response(JSON.stringify({ error: "Username not found on Roblox" }), { status: 404 });
+          return corsify(new Response(
+            JSON.stringify({ error: "Username not found on Roblox" }),
+            { status: 404, headers: { "Content-Type": "application/json" } }
+          ));
         }
       }
 
       if (!userId) {
-        return new Response(JSON.stringify({ error: "No userId or username provided" }), { status: 400 });
+        return corsify(new Response(
+          JSON.stringify({ error: "No userId or username provided" }),
+          { status: 400, headers: { "Content-Type": "application/json" } }
+        ));
       }
 
       const profileRes = await fetch(`https://users.roblox.com/v1/users/${userId}`);
       if (!profileRes.ok) {
-        return new Response(JSON.stringify({ error: "Failed to fetch user profile" }), { status: profileRes.status });
+        return corsify(new Response(
+          JSON.stringify({ error: "Failed to fetch user profile" }),
+          { status: profileRes.status, headers: { "Content-Type": "application/json" } }
+        ));
       }
       const profile = await profileRes.json();
-
       const promises = [];
       const promiseKeys = [];
 
@@ -103,12 +169,8 @@ export default {
       }
 
       const results = await Promise.allSettled(promises);
-      let groupsData = null;
-      let avatarData = null;
-      let presenceData = null;
-      let friendsCountData = null;
-      let followersCountData = null;
-      let followingCountData = null;
+      let groupsData = null, avatarData = null, presenceData = null;
+      let friendsCountData = null, followersCountData = null, followingCountData = null;
 
       results.forEach((result, index) => {
         if (result.status === 'fulfilled') {
@@ -122,10 +184,10 @@ export default {
               case 'followersCount': followersCountData = data; break;
               case 'followingCount': followingCountData = data; break;
             }
-          }).catch(() => { });
+          }).catch(() => {});
         }
       });
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, 100)); 
 
       const response = {
         id: profile.id,
@@ -187,50 +249,15 @@ export default {
         response.followingCount = followingCountData.count;
       }
 
-      return new Response(JSON.stringify(response), {
+      return corsify(new Response(JSON.stringify(response), {
         headers: { "Content-Type": "application/json" }
-      });
+      }));
 
     } catch (err) {
-      return new Response(JSON.stringify({ error: "Worker Error", detail: err.message }), {
+      return corsify(new Response(JSON.stringify({ error: "Worker Error", detail: err.message }), {
         status: 400,
         headers: { "Content-Type": "application/json" }
-      });
+      }));
     }
   }
-}
-
-function isBrowser(userAgent) {
-  const browserPatterns = [
-    "Mozilla", "Chrome", "Safari", "Edge", "Opera",
-    "MSIE", "Trident", "Firefox"
-  ];
-  return browserPatterns.some(pattern => userAgent.includes(pattern));
-}
-
-async function parseBody(request) {
-  const contentType = request.headers.get('content-type') || '';
-  if (contentType.includes('application/json')) {
-    return await request.json();
-  } else if (contentType.includes('application/x-www-form-urlencoded') || contentType.includes('multipart/form-data')) {
-    const formData = await request.formData();
-    const obj = {};
-    for (const [key, value] of formData.entries()) {
-      obj[key] = value; // all values are strings
-    }
-    return obj;
-  } else {
-    throw new Error('Unsupported content type. Please use JSON or form data.');
-  }
-}
-function normalizeBoolean(value, defaultValue) {
-  if (value === undefined || value === null) return defaultValue;
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'string') {
-    const lower = value.toLowerCase();
-    if (lower === 'true' || lower === '1' || lower === 'on') return true;
-    if (lower === 'false' || lower === '0' || lower === 'off') return false;
-  }
-  if (typeof value === 'number') return value !== 0;
-  return defaultValue;
-}
+};
