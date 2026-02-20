@@ -1,5 +1,5 @@
 {
-  "name": "rbx-group-fetcher",
+  "name": "rblx-user-info-fetcher",
   "main": "src/index.js",
   "compatibility_date": "2026-02-19",
   "observability": {
