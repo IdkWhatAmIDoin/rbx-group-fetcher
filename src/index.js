@@ -1,7 +1,7 @@
 export default {
   async fetch(request) {
     if (request.method !== "POST") {
-      return new Response(JSON.stringify({ error: "Use POST" }), { status: 405 });
+      return new Response(JSON.stringify({ error: "Are you in a browser? Otherwise, check if you're not using POST." }), { status: 405 });
     }
 
     try {
