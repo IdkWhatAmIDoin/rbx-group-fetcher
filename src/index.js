@@ -8,10 +8,7 @@ export default {
     if (request.method === "GET") {
       const userAgent = request.headers.get("User-Agent") || "";
       if (isBrowser(userAgent)) {
-        return new Response(
-          "This endpoint is for API requests only. Please send a POST request with JSON or form data. Do not open in a browser.",
-          { status: 400, headers: { "Content-Type": "text/plain" } }
-        );
+        return Response.redirect("https://rblx-uif-site.pages.dev", 302);
       }
     }
 
@@ -25,6 +22,15 @@ export default {
     }
     if (request.method !== "POST") {
       return new Response(JSON.stringify({ error: "Check if you're not using POST." }), { status: 405 });
+    }
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type",
+        },
+      });
     }
 
     try {
