@@ -63,6 +63,7 @@ export default {
       const userAgent = request.headers.get("User-Agent") || "";
       if (isBrowser(userAgent)) {
         return corsify(Response.redirect("https://rblx-uif-site.pages.dev", 302));
+      main
       }
     }
 
@@ -80,6 +81,15 @@ export default {
         JSON.stringify({ error: "Check if you're not using POST." }),
         { status: 405, headers: { "Content-Type": "application/json" } }
       ));
+    }
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type",
+        },
+      });
     }
 
     try {
