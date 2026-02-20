@@ -1,7 +1,25 @@
 export default {
   async fetch(request) {
+    if (request.method === "GET") {
+      const userAgent = request.headers.get("User-Agent") || "";
+      if (isBrowser(userAgent)) {
+        return new Response(
+          "This endpoint is for API requests only. Please send a POST request with JSON or form data. Do not open in a browser.",
+          { status: 400, headers: { "Content-Type": "text/plain" } }
+        );
+      }
+    }
+
+    if (userAgent.toLowerCase().includes("geometrydash")) {
+      return new Response(
+        JSON.stringify({
+          whatTheActualFuckBroQuestionMarkQuestionMark: "are you fucking launching this from GEOMETRY DASH????"
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
     if (request.method !== "POST") {
-      return new Response(JSON.stringify({ error: "Are you in a browser? Otherwise, check if you're not using POST." }), { status: 405 });
+      return new Response(JSON.stringify({ error: "Check if you're not using POST." }), { status: 405 });
     }
 
     try {
@@ -169,6 +187,14 @@ export default {
       });
     }
   }
+}
+
+function isBrowser(userAgent) {
+  const browserPatterns = [
+    "Mozilla", "Chrome", "Safari", "Edge", "Opera",
+    "MSIE", "Trident", "Firefox"
+  ];
+  return browserPatterns.some(pattern => userAgent.includes(pattern));
 }
 
 async function parseBody(request) {
