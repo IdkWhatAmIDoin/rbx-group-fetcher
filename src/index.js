@@ -5,17 +5,18 @@ export default {
     }
 
     try {
-      const body = await request.json();
+      const body = await parseBody(request);
       let userId = body.userId;
       const username = body.username;
       const groupId = body.groupId;
-      // optional rquest body fields
-      const includeAvatar = body.includeAvatar || false;
-      const includePresence = body.includePresence || false;
-      const includeFriendsCount = body.includeFriendsCount || false;
-      const includeFollowersCount = body.includeFollowersCount || false;
-      const includeFollowingCount = body.includeFollowingCount || false;
-      const includeGroups = body.includeGroups !== false;
+
+      const includeAvatar = normalizeBoolean(body.includeAvatar, false);
+      const includePresence = normalizeBoolean(body.includePresence, false);
+      const includeFriendsCount = normalizeBoolean(body.includeFriendsCount, false);
+      const includeFollowersCount = normalizeBoolean(body.includeFollowersCount, false);
+      const includeFollowingCount = normalizeBoolean(body.includeFollowingCount, false);
+      const includeGroups = normalizeBoolean(body.includeGroups, true); // default true
+
       if (!userId && username) {
         const userRes = await fetch("https://users.roblox.com/v1/usernames/users", {
           method: "POST",
@@ -24,7 +25,7 @@ export default {
         });
         const userData = await userRes.json();
         if (userData.data && userData.data.length > 0) {
-          userId = userData.data[0].id; 
+          userId = userData.data[0].id;
         } else {
           return new Response(JSON.stringify({ error: "Username not found on Roblox" }), { status: 404 });
         }
@@ -33,11 +34,13 @@ export default {
       if (!userId) {
         return new Response(JSON.stringify({ error: "No userId or username provided" }), { status: 400 });
       }
+
       const profileRes = await fetch(`https://users.roblox.com/v1/users/${userId}`);
       if (!profileRes.ok) {
         return new Response(JSON.stringify({ error: "Failed to fetch user profile" }), { status: profileRes.status });
       }
       const profile = await profileRes.json();
+
       const promises = [];
       const promiseKeys = [];
 
@@ -69,6 +72,7 @@ export default {
         promises.push(fetch(`https://friends.roblox.com/v1/users/${userId}/followings/count`));
         promiseKeys.push('followingCount');
       }
+
       const results = await Promise.allSettled(promises);
       let groupsData = null;
       let avatarData = null;
@@ -81,7 +85,7 @@ export default {
         if (result.status === 'fulfilled') {
           const key = promiseKeys[index];
           result.value.json().then(data => {
-            switch(key) {
+            switch (key) {
               case 'groups': groupsData = data; break;
               case 'avatar': avatarData = data; break;
               case 'presence': presenceData = data; break;
@@ -89,10 +93,11 @@ export default {
               case 'followersCount': followersCountData = data; break;
               case 'followingCount': followingCountData = data; break;
             }
-          }).catch(() => {});
+          }).catch(() => { });
         }
       });
       await new Promise(resolve => setTimeout(resolve, 100));
+
       const response = {
         id: profile.id,
         username: profile.name,
@@ -153,15 +158,42 @@ export default {
         response.followingCount = followingCountData.count;
       }
 
-      return new Response(JSON.stringify(response), { 
-        headers: { "Content-Type": "application/json" } 
+      return new Response(JSON.stringify(response), {
+        headers: { "Content-Type": "application/json" }
       });
 
     } catch (err) {
-      return new Response(JSON.stringify({ error: "Worker Error", detail: err.message }), { 
-        status: 400, 
-        headers: { "Content-Type": "application/json" } 
+      return new Response(JSON.stringify({ error: "Worker Error", detail: err.message }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" }
       });
     }
   }
+}
+
+async function parseBody(request) {
+  const contentType = request.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    return await request.json();
+  } else if (contentType.includes('application/x-www-form-urlencoded') || contentType.includes('multipart/form-data')) {
+    const formData = await request.formData();
+    const obj = {};
+    for (const [key, value] of formData.entries()) {
+      obj[key] = value; // all values are strings
+    }
+    return obj;
+  } else {
+    throw new Error('Unsupported content type. Please use JSON or form data.');
+  }
+}
+function normalizeBoolean(value, defaultValue) {
+  if (value === undefined || value === null) return defaultValue;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const lower = value.toLowerCase();
+    if (lower === 'true' || lower === '1' || lower === 'on') return true;
+    if (lower === 'false' || lower === '0' || lower === 'off') return false;
+  }
+  if (typeof value === 'number') return value !== 0;
+  return defaultValue;
 }
