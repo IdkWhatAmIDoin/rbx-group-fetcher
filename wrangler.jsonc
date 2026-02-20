@@ -1,5 +1,5 @@
 {
-  "name": "rblx-uif-site-test",
+  "name": "rbx-group-fetcher",
   "main": "src/index.js",
   "compatibility_date": "2026-02-19",
   "observability": {
