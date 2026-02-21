@@ -43,8 +43,74 @@ function normalizeBoolean(value, defaultValue) {
   if (typeof value === 'number') return value !== 0;
   return defaultValue;
 }
+
+const RATE_LIMIT = 50;
+const TIME_WINDOW = 60;
+const BAN_DURATION = 3600;
+
+async function checkRateLimit(env, ip) {
+  const key = `rate:${ip}`;
+  const now = Math.floor(Date.now() / 1000);
+  try {
+    let data = await env.IP_BANS.get(key, { type: 'json' });
+    if (!data) {
+      data = {
+        count: 1,
+        windowStart: now,
+        banned: false,
+        banExpiry: 0
+      };
+      await env.IP_BANS.put(key, JSON.stringify(data), { expirationTtl: BAN_DURATION });
+      return { allowed: true, data };
+    }
+    if (data.banned) {
+      if (now < data.banExpiry) {
+        return { 
+          allowed: false, 
+          reason: 'banned', 
+          retryAfter: data.banExpiry - now 
+        };
+      } else {
+        data = {
+          count: 1,
+          windowStart: now,
+          banned: false,
+          banExpiry: 0
+        };
+        await env.IP_BANS.put(key, JSON.stringify(data), { expirationTtl: BAN_DURATION });
+        return { allowed: true, data };
+      }
+    }
+    if (now - data.windowStart > TIME_WINDOW) {
+      data = {
+        count: 1,
+        windowStart: now,
+        banned: false,
+        banExpiry: 0
+      };
+    } else {
+      data.count++;
+    }
+    if (data.count > RATE_LIMIT) {
+      data.banned = true;
+      data.banExpiry = now + BAN_DURATION;
+      await env.IP_BANS.put(key, JSON.stringify(data), { expirationTtl: BAN_DURATION });
+      return { 
+        allowed: false, 
+        reason: 'rate_limit_exceeded', 
+        retryAfter: BAN_DURATION 
+      };
+    }
+    await env.IP_BANS.put(key, JSON.stringify(data), { expirationTtl: BAN_DURATION });
+    return { allowed: true, data };
+  } catch (error) {
+    console.error('Rate limit check failed:', error);
+    return { allowed: true, data: null };
+  }
+}
+
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
@@ -56,18 +122,41 @@ export default {
     }
 
     const url = new URL(request.url);
+    const clientIP = request.headers.get("CF-Connecting-IP") || 
+                     request.headers.get("X-Forwarded-For") || 
+                     "unknown";
+
+    if (url.pathname !== "/health" && !url.pathname.startsWith("/docs/")) {
+      const rateCheck = await checkRateLimit(env, clientIP);
+      if (!rateCheck.allowed) {
+        const response = new Response(JSON.stringify({
+          error: "Rate limit exceeded. You have been temporarily banned.",
+          retry_after: rateCheck.retryAfter,
+          reason: rateCheck.reason
+        }), {
+          status: 429,
+          headers: {
+            "Content-Type": "application/json",
+            "Retry-After": rateCheck.retryAfter.toString()
+          }
+        });
+        return corsify(response);
+      }
+    }
+
     if (url.pathname === "/health") {
       return corsify(new Response("OK", { status: 200 }));
     }
+
     if (request.method === "GET") {
       const userAgent = request.headers.get("User-Agent") || "";
       if (isBrowser(userAgent)) {
         return corsify(Response.redirect("https://rblx-uif-site.pages.dev", 302));
-      main
       }
     }
 
     const userAgent = request.headers.get("User-Agent") || "";
+
     if (userAgent.toLowerCase().includes("geometrydash")) {
       return corsify(new Response(
         JSON.stringify({
@@ -76,20 +165,12 @@ export default {
         { status: 200, headers: { "Content-Type": "application/json" } }
       ));
     }
+
     if (request.method !== "POST") {
       return corsify(new Response(
         JSON.stringify({ error: "Check if you're not using POST." }),
         { status: 405, headers: { "Content-Type": "application/json" } }
       ));
-    }
-    if (request.method === "OPTIONS") {
-      return new Response(null, {
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type",
-        },
-      });
     }
 
     try {
@@ -104,6 +185,7 @@ export default {
       const includeFollowersCount = normalizeBoolean(body.includeFollowersCount, false);
       const includeFollowingCount = normalizeBoolean(body.includeFollowingCount, false);
       const includeGroups = normalizeBoolean(body.includeGroups, true);
+
       if (!userId && username) {
         const userRes = await fetch("https://users.roblox.com/v1/usernames/users", {
           method: "POST",
@@ -136,6 +218,7 @@ export default {
         ));
       }
       const profile = await profileRes.json();
+
       const promises = [];
       const promiseKeys = [];
 
@@ -187,7 +270,7 @@ export default {
           }).catch(() => {});
         }
       });
-      await new Promise(resolve => setTimeout(resolve, 100)); 
+      await new Promise(resolve => setTimeout(resolve, 100));
 
       const response = {
         id: profile.id,
