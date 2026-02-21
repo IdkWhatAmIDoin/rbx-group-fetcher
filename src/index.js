@@ -143,8 +143,6 @@ export default {
         if (request.method !== "POST") {
           return corsify(new Response("Method not allowed", { status: 405 }));
         }
-    }
-
       try {
         const { token, returnUrl } = await request.json();
         const secretKey = env.TURNSTILE_SECRET;
