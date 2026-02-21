@@ -65,7 +65,7 @@ const BAN_DURATION = 3600;
 
 async function getIpPolicy(env) {
   try {
-    const policyData = await env.IP_BANS.get('ip_policy', { type: 'json' });y
+    const policyData = await env.IP_BANS.get('ip_policy', { type: 'json' });
     return (policyData && Array.isArray(policyData.bans)) ? policyData.bans : [];
   } catch (err) {
     console.error('Failed to fetch IP policy:', err);
