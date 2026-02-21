@@ -44,10 +44,34 @@ function normalizeBoolean(value, defaultValue) {
   return defaultValue;
 }
 
+// Rate limiting constants
 const RATE_LIMIT = 50;
 const TIME_WINDOW = 60;
 const BAN_DURATION = 3600;
 
+// ----- NEW: IP Policy Functions -----
+async function getIpPolicy(env) {
+  try {
+    const policyData = await env.IP_BANS.get('ip_policy', { type: 'json' });
+    // If policyData exists and has a 'bans' array, return it; otherwise return empty array
+    return (policyData && Array.isArray(policyData.bans)) ? policyData.bans : [];
+  } catch (err) {
+    console.error('Failed to fetch IP policy:', err);
+    return [];
+  }
+}
+
+function checkIpAgainstPolicy(ip, bansArray) {
+  for (const entry of bansArray) {
+    if (entry.ip === ip) {
+      return entry; // Return the whole entry
+    }
+  }
+  return null;
+}
+// ----------------------------------
+
+// ----- Existing rate limiter (unchanged) -----
 async function checkRateLimit(env, ip) {
   const key = `rate:${ip}`;
   const now = Math.floor(Date.now() / 1000);
@@ -111,6 +135,7 @@ async function checkRateLimit(env, ip) {
 
 export default {
   async fetch(request, env) {
+    // CORS preflight
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
@@ -126,6 +151,44 @@ export default {
                      request.headers.get("X-Forwarded-For") || 
                      "unknown";
 
+    // ----- NEW: Policy check before rate limiting -----
+    const bans = await getIpPolicy(env);
+    const policyMatch = checkIpAgainstPolicy(clientIP, bans);
+    
+    if (policyMatch) {
+      const action = policyMatch.action || 'block';
+      switch (action) {
+        case 'block':
+          return corsify(new Response(JSON.stringify({
+            error: "Access denied due to security policy.",
+            reason: `IP matched policy (risk: ${policyMatch.risk || 'unknown'})`,
+            action: action
+          }), { status: 403 }));
+
+        case 'challenge':
+          // For now treat as block; you can later implement a CAPTCHA page
+          return corsify(new Response(JSON.stringify({
+            error: "Challenge required.",
+            reason: `IP requires challenge (risk: ${policyMatch.risk || 'unknown'})`,
+            action: action
+          }), { status: 401 }));
+
+        case 'allow':
+          // Whitelisted – skip all further checks, proceed to API
+          break; // continue below
+
+        default:
+          // Unknown action – block to be safe
+          return corsify(new Response(JSON.stringify({
+            error: "Access denied (unknown policy action).",
+            reason: `IP matched policy with unknown action: ${action}`,
+            action: action
+          }), { status: 403 }));
+      }
+    }
+    // ------------------------------------------------
+
+    // Rate limiting (skip for health and docs paths)
     if (url.pathname !== "/health" && !url.pathname.startsWith("/docs/")) {
       const rateCheck = await checkRateLimit(env, clientIP);
       if (!rateCheck.allowed) {
@@ -144,10 +207,12 @@ export default {
       }
     }
 
+    // Health check
     if (url.pathname === "/health") {
       return corsify(new Response("OK", { status: 200 }));
     }
 
+    // Browser GET redirect
     if (request.method === "GET") {
       const userAgent = request.headers.get("User-Agent") || "";
       if (isBrowser(userAgent)) {
@@ -157,6 +222,7 @@ export default {
 
     const userAgent = request.headers.get("User-Agent") || "";
 
+    // Geometry Dash easter egg
     if (userAgent.toLowerCase().includes("geometrydash")) {
       return corsify(new Response(
         JSON.stringify({
@@ -166,6 +232,7 @@ export default {
       ));
     }
 
+    // Only POST allowed for API
     if (request.method !== "POST") {
       return corsify(new Response(
         JSON.stringify({ error: "Check if you're not using POST." }),
@@ -173,6 +240,7 @@ export default {
       ));
     }
 
+    // Main API logic
     try {
       const body = await parseBody(request);
       let userId = body.userId;
