@@ -8,6 +8,21 @@ function corsify(response) {
   });
 }
 
+async function updateStats(env, type) {
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const totalKey = 'stats_total';
+  const dailyKey = `stats_daily_${today}`;
+  let total = await env.STATS.get(totalKey, { type: 'json' }) || { totalRequests: 0, successfulRequests: 0, bannedRequests: 0 };
+  total.totalRequests++;
+  if (type === 'success') total.successfulRequests++;
+  if (type === 'ban') total.bannedRequests++;
+  await env.STATS.put(totalKey, JSON.stringify(total));
+  let daily = await env.STATS.get(dailyKey, { type: 'json' }) || { totalRequests: 0, successfulRequests: 0, bannedRequests: 0, date: today };
+  daily.totalRequests++;
+  if (type === 'success') daily.successfulRequests++;
+  if (type === 'ban') daily.bannedRequests++;
+  await env.STATS.put(dailyKey, JSON.stringify(daily), { expirationTtl: 86400 * 30 });
+}
 function isBrowser(userAgent) {
   const browserPatterns = [
     "Mozilla", "Chrome", "Safari", "Edge", "Opera",
