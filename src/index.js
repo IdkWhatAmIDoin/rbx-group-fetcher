@@ -8,8 +8,8 @@ function corsify(response) {
   });
 }
 
-async function updateStats(env, type) {
-  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+async function updateStats(env, type = 'request') {
+  const today = new Date().toISOString().slice(0, 10);
   const totalKey = 'stats_total';
   const dailyKey = `stats_daily_${today}`;
   let total = await env.STATS.get(totalKey, { type: 'json' }) || { totalRequests: 0, successfulRequests: 0, bannedRequests: 0 };
@@ -184,10 +184,22 @@ export default {
         return corsify(new Response('Invalid request', { status: 400 }));
       }
     }
+    if (url.pathname === "/api/stats") {
+      const today = new Date().toISOString().slice(0, 10);
+      const totalKey = 'stats_total';
+      const dailyKey = `stats_daily_${today}`;
+  
+      const total = await env.STATS.get(totalKey, { type: 'json' }) || { totalRequests: 0, successfulRequests: 0, bannedRequests: 0 };
+      const daily = await env.STATS.get(dailyKey, { type: 'json' }) || { totalRequests: 0, successfulRequests: 0, bannedRequests: 0, date: today };
+
+      return corsify(new Response(JSON.stringify({ total, daily }), {
+        headers: { "Content-Type": "application/json" }
+      }));
+    }
     const clientIP = request.headers.get("CF-Connecting-IP") || 
                      request.headers.get("X-Forwarded-For") || 
                      "unknown";
-
+    await updateStats(env, 'request');
     const bans = await getIpPolicy(env);
     const policyMatch = checkIpAgainstPolicy(clientIP, bans);
     
