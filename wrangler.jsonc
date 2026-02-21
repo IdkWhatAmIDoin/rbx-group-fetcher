@@ -12,6 +12,10 @@
     {
       "binding": "IP_BANS",
       "id": "c446214c634445fdbddc36446763d51a"
+    },
+    {
+      "binding": "STATS",
+      "id": "538d43ddc58d471a948f8d2e719acd55",
     }
   ]
 }
