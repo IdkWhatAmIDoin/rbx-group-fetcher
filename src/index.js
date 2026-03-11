@@ -283,11 +283,26 @@ export default {
           body: JSON.stringify({ usernames: [username], excludeBannedUsers: false })
         });
         const userData = await userRes.json();
+        if (!userRes.ok) {
+          return corsify(new Response(
+            JSON.stringify({ 
+              error: "Failed to fetch username lookup",
+              apiStatusCode: userRes.status,
+              requestedUsername: username,
+              apiResponse: userData
+            }),
+            { status: userRes.status, headers: { "Content-Type": "application/json" } }
+          ));
+        }
         if (userData.data && userData.data.length > 0) {
           userId = userData.data[0].id;
         } else {
           return corsify(new Response(
-            JSON.stringify({ error: "Username not found on Roblox" }),
+            JSON.stringify({ 
+                error: "Unknown error",
+              requestedUsername: username,
+              apiResponse: userData
+            }),
             { status: 404, headers: { "Content-Type": "application/json" } }
           ));
         }
