@@ -63,6 +63,11 @@ function normalizeBoolean(value, defaultValue) {
 
 function sanitizeRobloxId(value, fieldName) {
   if (value === undefined || value === null) return null;
+  // FIX: explicitly reject scientific notation strings like "1e5" since
+  // parseInt("1e5", 10) === 1, not 100000, which silently truncates the value.
+  if (typeof value === 'string' && /[eE]/.test(value)) {
+    throw new Error(`Invalid ${fieldName}: scientific notation is not allowed, got "${value}"`);
+  }
   const n = parseInt(value, 10);
   if (isNaN(n) || n <= 0 || String(n) !== String(value).trim()) {
     throw new Error(`Invalid ${fieldName}: must be a positive integer, got "${value}"`);
@@ -76,13 +81,34 @@ const RATE_LIMIT = 50;
 const TIME_WINDOW = 60;
 const BAN_DURATION = 3600;
 
+// in-memory rate limit cache — cloudflare reuses worker isolates within the same
+// datacenter, so this map persists across requests on the same isolate. this cuts
+// KV writes from "every request" down to "only on first-seen, ban, or window reset",
+// which is critical on the free tier (1,000 KV writes/day limit).
+// structure: ip → { count, windowStart, banned, banExpiry }
+const rateLimitCache = new Map();
+
+// in-memory ip policy cache — avoids a KV read on every single request.
+// the policy list changes rarely, so 30s staleness is fine.
+// structure: { bans: [...], fetchedAt: unixSeconds }
+let ipPolicyCache = null;
+const IP_POLICY_CACHE_TTL = 30;
+
 async function getIpPolicy(env) {
+  const now = Math.floor(Date.now() / 1000);
+  if (ipPolicyCache && (now - ipPolicyCache.fetchedAt) < IP_POLICY_CACHE_TTL) {
+    return ipPolicyCache.bans;
+  }
   try {
     const policyData = await env.IP_BANS.get('ip_policy', { type: 'json' });
-    return (policyData && Array.isArray(policyData.bans)) ? policyData.bans : [];
+    const bans = (policyData && Array.isArray(policyData.bans)) ? policyData.bans : [];
+    ipPolicyCache = { bans, fetchedAt: now };
+    return bans;
   } catch (err) {
     console.error('Failed to fetch IP policy:', err);
-    return [];
+    // return stale cache if available rather than an empty list, so a KV blip
+    // doesn't suddenly un-ban everyone
+    return ipPolicyCache ? ipPolicyCache.bans : [];
   }
 }
 
@@ -97,40 +123,86 @@ async function checkRateLimit(env, ip) {
   const key = `rate:${ip}`;
   const now = Math.floor(Date.now() / 1000);
   try {
-    let data = await env.IP_BANS.get(key, { type: 'json' });
+    // check in-memory cache first — avoids a KV read on every request
+    let data = rateLimitCache.get(ip);
+
     if (!data) {
-      data = { count: 1, windowStart: now, banned: false, banExpiry: 0 };
-      await env.IP_BANS.put(key, JSON.stringify(data), { expirationTtl: BAN_DURATION });
-      return { allowed: true, data };
+      // not in memory — check KV in case this isolate is fresh or the ip was
+      // banned by a different isolate/datacenter
+      const kvData = await env.IP_BANS.get(key, { type: 'json' });
+      if (kvData) {
+        data = kvData;
+        rateLimitCache.set(ip, data);
+      } else {
+        // first ever request from this ip
+        data = { count: 1, windowStart: now, banned: false, banExpiry: 0 };
+        rateLimitCache.set(ip, data);
+        // write to KV so other isolates know about this ip
+        // TTL: just long enough to cover the window
+        await env.IP_BANS.put(key, JSON.stringify(data), { expirationTtl: TIME_WINDOW + 5 });
+        return { allowed: true, data };
+      }
     }
 
     if (data.banned) {
       if (now < data.banExpiry) {
         return { allowed: false, reason: 'banned', retryAfter: data.banExpiry - now };
       }
+      // ban expired — reset
       data = { count: 1, windowStart: now, banned: false, banExpiry: 0 };
-      await env.IP_BANS.put(key, JSON.stringify(data), { expirationTtl: BAN_DURATION });
+      rateLimitCache.set(ip, data);
+      await env.IP_BANS.put(key, JSON.stringify(data), { expirationTtl: TIME_WINDOW + 5 });
       return { allowed: true, data };
     }
 
     if (now - data.windowStart > TIME_WINDOW) {
+      // window rolled over — reset counter, write to KV to sync other isolates
       data = { count: 1, windowStart: now, banned: false, banExpiry: 0 };
-    } else {
-      data.count++;
+      rateLimitCache.set(ip, data);
+      await env.IP_BANS.put(key, JSON.stringify(data), { expirationTtl: TIME_WINDOW + 5 });
+      return { allowed: true, data };
     }
+
+    // still within window — increment in memory only, no KV write needed
+    data.count++;
+    rateLimitCache.set(ip, data);
 
     if (data.count > RATE_LIMIT) {
       data.banned = true;
       data.banExpiry = now + BAN_DURATION;
+      rateLimitCache.set(ip, data);
+      // ban must be written to KV so other isolates enforce it too
       await env.IP_BANS.put(key, JSON.stringify(data), { expirationTtl: BAN_DURATION });
       return { allowed: false, reason: 'rate_limit_exceeded', retryAfter: BAN_DURATION };
     }
 
-    await env.IP_BANS.put(key, JSON.stringify(data), { expirationTtl: BAN_DURATION });
     return { allowed: true, data };
   } catch (error) {
     console.error('Rate limit check failed:', error);
+    // fail open, but log it — if KV is broken we can't enforce bans anyway
     return { allowed: true, data: null };
+  }
+}
+
+// ─── clearance cookie helper ───────────────────────────────────────────────────
+
+// FIX: extracted cookie reading into a helper so it can be used in the main handler.
+// previously the clearance token was written to KV but never read anywhere — the
+// entire challenge system was a no-op. this function reads the cf_clearance cookie
+// and verifies it against KV.
+function getClearanceCookie(request) {
+  const cookieHeader = request.headers.get('Cookie') || '';
+  const match = cookieHeader.match(/(?:^|;\s*)cf_clearance=([^;]+)/);
+  return match ? match[1] : null;
+}
+
+async function isClearanceValid(env, token) {
+  if (!token) return false;
+  try {
+    const entry = await env.IP_BANS.get(`clearance:${token}`, { type: 'json' });
+    return entry !== null;
+  } catch {
+    return false;
   }
 }
 
@@ -157,6 +229,24 @@ export default {
       if (request.method !== "POST") {
         return corsify(new Response("Method not allowed", { status: 405 }));
       }
+
+      // FIX: /verify-challenge was handled before rate limiting ran, meaning it
+      // was completely unprotected. check rate limit here explicitly.
+      const challengeIP =
+        request.headers.get("CF-Connecting-IP") ||
+        request.headers.get("X-Forwarded-For") ||
+        null;
+      if (!challengeIP) {
+        return corsify(new Response(
+          JSON.stringify({ error: "Could not determine client IP" }),
+          { status: 400, headers: { "Content-Type": "application/json" } }
+        ));
+      }
+      const challengeRate = await checkRateLimit(env, challengeIP);
+      if (!challengeRate.allowed) {
+        return corsify(Response.redirect('https://rblx-uif-site.pages.dev/blocked?type=temporary', 302));
+      }
+
       try {
         const { token, returnUrl } = await request.json();
 
@@ -184,8 +274,6 @@ export default {
         console.log('Turnstile outcome:', JSON.stringify(outcome));
 
         if (outcome.success) {
-          // FIX: the clearance token is now stored in KV so it can actually be verified
-          // on subsequent requests, instead of being a cosmetic-only cookie
           const clearanceToken = crypto.randomUUID();
           await env.IP_BANS.put(
             `clearance:${clearanceToken}`,
@@ -212,10 +300,21 @@ export default {
     }
 
     // ── ip / rate limiting ───────────────────────────────────────────────────
+
+    // FIX: reject requests with no resolvable IP instead of bucketing them all
+    // under "unknown" in KV. in a deployed cloudflare worker CF-Connecting-IP is
+    // always injected, so its absence is a strong signal something is wrong.
     const clientIP =
       request.headers.get("CF-Connecting-IP") ||
       request.headers.get("X-Forwarded-For") ||
-      "unknown";
+      null;
+
+    if (!clientIP) {
+      return corsify(new Response(
+        JSON.stringify({ error: "Could not determine client IP" }),
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      ));
+    }
 
     const bans = await getIpPolicy(env);
     const policyMatch = checkIpAgainstPolicy(clientIP, bans);
@@ -225,8 +324,16 @@ export default {
       if (action === 'block') {
         return corsify(Response.redirect('https://rblx-uif-site.pages.dev/blocked?type=permanent', 302));
       } else if (action === 'challenge') {
-        const returnUrl = encodeURIComponent(request.url);
-        return corsify(Response.redirect(`https://rblx-uif-site.pages.dev/challenge?return=${returnUrl}`, 302));
+        // FIX: before redirecting to the challenge page, check if the client already
+        // has a valid clearance cookie. if they do, let them through — otherwise the
+        // challenge loop is infinite for clients that have already completed it.
+        const clearanceToken = getClearanceCookie(request);
+        const cleared = await isClearanceValid(env, clearanceToken);
+        if (!cleared) {
+          const returnUrl = encodeURIComponent(request.url);
+          return corsify(Response.redirect(`https://rblx-uif-site.pages.dev/challenge?return=${returnUrl}`, 302));
+        }
+        // valid clearance — fall through to normal handling
       } else if (action === 'allow') {
         // explicitly allowed, fall through
       } else {
@@ -258,6 +365,16 @@ export default {
       }
     }
 
+    // FIX: method guard moved before the geometry dash easter egg check.
+    // previously a GD client sending DELETE/PUT/etc would get the funny json
+    // instead of a proper 405.
+    if (request.method !== "POST") {
+      return corsify(new Response(
+        JSON.stringify({ error: "Check if you're not using POST." }),
+        { status: 405, headers: { "Content-Type": "application/json" } }
+      ));
+    }
+
     // ── geometry dash easter egg ─────────────────────────────────────────────
     const userAgent = request.headers.get("User-Agent") || "";
     if (userAgent.toLowerCase().includes("geometrydash")) {
@@ -266,13 +383,6 @@ export default {
           whatTheActualFuckBroQuestionMarkQuestionMark: "are you fucking launching this from GEOMETRY DASH????"
         }),
         { status: 200, headers: { "Content-Type": "application/json" } }
-      ));
-    }
-
-    if (request.method !== "POST") {
-      return corsify(new Response(
-        JSON.stringify({ error: "Check if you're not using POST." }),
-        { status: 405, headers: { "Content-Type": "application/json" } }
       ));
     }
 
@@ -324,7 +434,6 @@ export default {
         if (userData.data && userData.data.length > 0) {
           userId = userData.data[0].id;
         } else {
-          // FIX: "Unknown error" renamed to "User not found" — the previous label was misleading
           return corsify(new Response(
             JSON.stringify({
               error: "User not found",
@@ -385,10 +494,6 @@ export default {
         promiseKeys.push('followingCount');
       }
 
-      // FIX: replaced the fire-and-forget .json() + 100ms sleep hack with proper
-      // awaited Promise.all on the json() calls. this guarantees all data is resolved
-      // before building the response, and cancels unread bodies on failures to avoid
-      // memory pressure from unconsumed response streams.
       const rawResults = await Promise.allSettled(promises);
 
       const jsonResults = await Promise.all(
@@ -398,6 +503,11 @@ export default {
               const data = await result.value.json();
               return { key: promiseKeys[index], data };
             } catch {
+              // FIX: cancel body stream on fulfilled-but-unparseable responses to
+              // avoid holding open readable streams that weren't previously cleaned up.
+              // the rejected-fetch cancel below only covered network failures, not
+              // cases where the fetch succeeded but the body was malformed json.
+              try { result.value?.body?.cancel(); } catch {}
               return null;
             }
           } else {
@@ -443,7 +553,6 @@ export default {
           roleId: g.role.id,
           roleName: g.role.name,
           rank: g.role.rank,
-          isPrimary: g.isPrimaryGroup
         }));
 
         if (groupId) {
@@ -454,7 +563,6 @@ export default {
             roleId: groupMatch.role.id,
             roleName: groupMatch.role.name,
             rank: groupMatch.role.rank,
-            isPrimary: groupMatch.isPrimaryGroup
           } : null;
         }
       }
@@ -491,8 +599,12 @@ export default {
       }));
 
     } catch (err) {
+      // FIX: previously this returned 400 for everything, including upstream failures
+      // which are clearly not the caller's fault. now distinguishes client errors
+      // (validation, bad input) from server/upstream errors.
+      const isClientError = err instanceof SyntaxError || err.message?.includes('Invalid ') || err.message?.includes('Unsupported content type');
       return corsify(new Response(JSON.stringify({ error: "Worker Error", detail: err.message }), {
-        status: 400,
+        status: isClientError ? 400 : 502,
         headers: { "Content-Type": "application/json" }
       }));
     }
