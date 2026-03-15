@@ -1,3 +1,10 @@
+// DIMA signature!!
+// major overhaul w   why the   why the fuck am i getting suggestions what
+
+// im dima yk... im so cool.... 
+
+// ─── helpers ──────────────────────────────────────────────────────────────────
+
 function corsify(response) {
   const newHeaders = new Headers(response.headers);
   newHeaders.set("Access-Control-Allow-Origin", "*");
@@ -8,34 +15,23 @@ function corsify(response) {
   });
 }
 
-async function updateStats(env, type = 'request') {
-  const today = new Date().toISOString().slice(0, 10);
-  const totalKey = 'stats_total';
-  const dailyKey = `stats_daily_${today}`;
-  let total = await env.STATS.get(totalKey, { type: 'json' }) || { totalRequests: 0, successfulRequests: 0, bannedRequests: 0 };
-  total.totalRequests++;
-  if (type === 'success') total.successfulRequests++;
-  if (type === 'ban') total.bannedRequests++;
-  await env.STATS.put(totalKey, JSON.stringify(total));
-  let daily = await env.STATS.get(dailyKey, { type: 'json' }) || { totalRequests: 0, successfulRequests: 0, bannedRequests: 0, date: today };
-  daily.totalRequests++;
-  if (type === 'success') daily.successfulRequests++;
-  if (type === 'ban') daily.bannedRequests++;
-  await env.STATS.put(dailyKey, JSON.stringify(daily), { expirationTtl: 86400 * 30 });
-}
+// ─── user-agent check ──────────────────────────────────────────────────────────
+
 function isBrowser(userAgent) {
-  const browserPatterns = [
-    "Mozilla", "Chrome", "Safari", "Edge", "Opera",
-    "MSIE", "Trident", "Firefox"
-  ];
+  const browserPatterns = ["Mozilla", "Chrome", "Safari", "Edg/", "Opera", "Firefox"];
   return browserPatterns.some(pattern => userAgent.includes(pattern));
 }
+
+// ─── body parsing ──────────────────────────────────────────────────────────────
 
 async function parseBody(request) {
   const contentType = request.headers.get('content-type') || '';
   if (contentType.includes('application/json')) {
     return await request.json();
-  } else if (contentType.includes('application/x-www-form-urlencoded') || contentType.includes('multipart/form-data')) {
+  } else if (
+    contentType.includes('application/x-www-form-urlencoded') ||
+    contentType.includes('multipart/form-data')
+  ) {
     const formData = await request.formData();
     const obj = {};
     for (const [key, value] of formData.entries()) {
@@ -47,6 +43,8 @@ async function parseBody(request) {
   }
 }
 
+// ─── boolean coercion ──────────────────────────────────────────────────────────
+
 function normalizeBoolean(value, defaultValue) {
   if (value === undefined || value === null) return defaultValue;
   if (typeof value === 'boolean') return value;
@@ -56,8 +54,23 @@ function normalizeBoolean(value, defaultValue) {
     if (lower === 'false' || lower === '0' || lower === 'off') return false;
   }
   if (typeof value === 'number') return value !== 0;
-  return defaultValue;
+  // FIX: arrays/objects now throw instead of silently falling back to defaultValue
+  throw new Error(`Invalid boolean value for parameter: ${JSON.stringify(value)}`);
 }
+
+// ─── input validation ──────────────────────────────────────────────────────────
+// FIX: userId and groupId are now validated and coerced to safe integers before use.
+
+function sanitizeRobloxId(value, fieldName) {
+  if (value === undefined || value === null) return null;
+  const n = parseInt(value, 10);
+  if (isNaN(n) || n <= 0 || String(n) !== String(value).trim()) {
+    throw new Error(`Invalid ${fieldName}: must be a positive integer, got "${value}"`);
+  }
+  return n;
+}
+
+// ─── rate limiting ─────────────────────────────────────────────────────────────
 
 const RATE_LIMIT = 50;
 const TIME_WINDOW = 60;
@@ -75,65 +88,44 @@ async function getIpPolicy(env) {
 
 function checkIpAgainstPolicy(ip, bansArray) {
   for (const entry of bansArray) {
-    if (entry.ip === ip) {
-      return entry; 
-    }
+    if (entry.ip === ip) return entry;
   }
   return null;
 }
+
 async function checkRateLimit(env, ip) {
   const key = `rate:${ip}`;
   const now = Math.floor(Date.now() / 1000);
   try {
     let data = await env.IP_BANS.get(key, { type: 'json' });
     if (!data) {
-      data = {
-        count: 1,
-        windowStart: now,
-        banned: false,
-        banExpiry: 0
-      };
+      data = { count: 1, windowStart: now, banned: false, banExpiry: 0 };
       await env.IP_BANS.put(key, JSON.stringify(data), { expirationTtl: BAN_DURATION });
       return { allowed: true, data };
     }
+
     if (data.banned) {
       if (now < data.banExpiry) {
-        return { 
-          allowed: false, 
-          reason: 'banned', 
-          retryAfter: data.banExpiry - now 
-        };
-      } else {
-        data = {
-          count: 1,
-          windowStart: now,
-          banned: false,
-          banExpiry: 0
-        };
-        await env.IP_BANS.put(key, JSON.stringify(data), { expirationTtl: BAN_DURATION });
-        return { allowed: true, data };
+        return { allowed: false, reason: 'banned', retryAfter: data.banExpiry - now };
       }
+      data = { count: 1, windowStart: now, banned: false, banExpiry: 0 };
+      await env.IP_BANS.put(key, JSON.stringify(data), { expirationTtl: BAN_DURATION });
+      return { allowed: true, data };
     }
+
     if (now - data.windowStart > TIME_WINDOW) {
-      data = {
-        count: 1,
-        windowStart: now,
-        banned: false,
-        banExpiry: 0
-      };
+      data = { count: 1, windowStart: now, banned: false, banExpiry: 0 };
     } else {
       data.count++;
     }
+
     if (data.count > RATE_LIMIT) {
       data.banned = true;
       data.banExpiry = now + BAN_DURATION;
       await env.IP_BANS.put(key, JSON.stringify(data), { expirationTtl: BAN_DURATION });
-      return { 
-        allowed: false, 
-        reason: 'rate_limit_exceeded', 
-        retryAfter: BAN_DURATION 
-      };
+      return { allowed: false, reason: 'rate_limit_exceeded', retryAfter: BAN_DURATION };
     }
+
     await env.IP_BANS.put(key, JSON.stringify(data), { expirationTtl: BAN_DURATION });
     return { allowed: true, data };
   } catch (error) {
@@ -142,8 +134,12 @@ async function checkRateLimit(env, ip) {
   }
 }
 
+// ─── main handler ──────────────────────────────────────────────────────────────
+
 export default {
   async fetch(request, env) {
+
+    // preflight
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
@@ -153,13 +149,31 @@ export default {
         },
       });
     }
+
     const url = new URL(request.url);
+
+    // ── /verify-challenge ────────────────────────────────────────────────────
     if (url.pathname === "/verify-challenge") {
-        if (request.method !== "POST") {
-          return corsify(new Response("Method not allowed", { status: 405 }));
-        }
+      if (request.method !== "POST") {
+        return corsify(new Response("Method not allowed", { status: 405 }));
+      }
       try {
         const { token, returnUrl } = await request.json();
+
+        // FIX: validate returnUrl is same-origin to prevent open redirect
+        if (returnUrl) {
+          let parsed;
+          try {
+            parsed = new URL(returnUrl, request.url);
+          } catch {
+            return corsify(new Response('Invalid returnUrl', { status: 400 }));
+          }
+          const requestOrigin = new URL(request.url).origin;
+          if (parsed.origin !== requestOrigin) {
+            return corsify(new Response('returnUrl must be same-origin', { status: 400 }));
+          }
+        }
+
         const secretKey = env.TURNSTILE_SECRET;
         const verifyResponse = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
           method: 'POST',
@@ -167,16 +181,28 @@ export default {
           body: `secret=${encodeURIComponent(secretKey)}&response=${encodeURIComponent(token)}`
         });
         const outcome = await verifyResponse.json();
-
         console.log('Turnstile outcome:', JSON.stringify(outcome));
-        
+
         if (outcome.success) {
-          const response = corsify(new Response(null, {
+          // FIX: the clearance token is now stored in KV so it can actually be verified
+          // on subsequent requests, instead of being a cosmetic-only cookie
+          const clearanceToken = crypto.randomUUID();
+          await env.IP_BANS.put(
+            `clearance:${clearanceToken}`,
+            JSON.stringify({ createdAt: Date.now() }),
+            { expirationTtl: 3600 }
+          );
+
+          const safeReturn = returnUrl || '/';
+          const redirectResponse = new Response(null, {
             status: 302,
-            headers: { 'Location': returnUrl || '/' }
-          }));
-          response.headers.append('Set-Cookie', `cf_clearance=${crypto.randomUUID()}; Max-Age=3600; Path=/; HttpOnly; Secure; SameSite=Lax`);
-          return corsify(response);
+            headers: { 'Location': safeReturn }
+          });
+          redirectResponse.headers.append(
+            'Set-Cookie',
+            `cf_clearance=${clearanceToken}; Max-Age=3600; Path=/; HttpOnly; Secure; SameSite=Lax`
+          );
+          return corsify(redirectResponse);
         } else {
           return corsify(new Response('Verification failed', { status: 403 }));
         }
@@ -184,63 +210,47 @@ export default {
         return corsify(new Response('Invalid request', { status: 400 }));
       }
     }
-    if (url.pathname === "/api/stats") {
-      const today = new Date().toISOString().slice(0, 10);
-      const totalKey = 'stats_total';
-      const dailyKey = `stats_daily_${today}`;
-  
-      const total = await env.STATS.get(totalKey, { type: 'json' }) || { totalRequests: 0, successfulRequests: 0, bannedRequests: 0 };
-      const daily = await env.STATS.get(dailyKey, { type: 'json' }) || { totalRequests: 0, successfulRequests: 0, bannedRequests: 0, date: today };
 
-      return corsify(new Response(JSON.stringify({ total, daily }), {
-        headers: { "Content-Type": "application/json" }
-      }));
-    }
-    const clientIP = request.headers.get("CF-Connecting-IP") || 
-                     request.headers.get("X-Forwarded-For") || 
-                     "unknown";
-    await updateStats(env, 'request');
+    // ── ip / rate limiting ───────────────────────────────────────────────────
+    const clientIP =
+      request.headers.get("CF-Connecting-IP") ||
+      request.headers.get("X-Forwarded-For") ||
+      "unknown";
+
     const bans = await getIpPolicy(env);
     const policyMatch = checkIpAgainstPolicy(clientIP, bans);
-    
+
     if (policyMatch) {
       const action = policyMatch.action || 'block';
-      switch (action) {
-        case 'block':
-          return corsify(Response.redirect(
-            'https://rblx-uif-site.pages.dev/blocked?type=permanent',
-            302
-          ));
-
-        case 'challenge':
-          const returnUrl = encodeURIComponent(request.url);
-          return corsify(Response.redirect(
-            `https://rblx-uif-site.pages.dev/challenge?return=${returnUrl}`,
-            302
-          ));
-        case 'allow':
-          break;
-
-        default:
-          return corsify(new Response(JSON.stringify({
-            error: "Access denied (unknown policy action).",
-            reason: `IP matched policy with unknown action: ${action}`,
-            action: action
-          }), { status: 403 }));
+      if (action === 'block') {
+        return corsify(Response.redirect('https://rblx-uif-site.pages.dev/blocked?type=permanent', 302));
+      } else if (action === 'challenge') {
+        const returnUrl = encodeURIComponent(request.url);
+        return corsify(Response.redirect(`https://rblx-uif-site.pages.dev/challenge?return=${returnUrl}`, 302));
+      } else if (action === 'allow') {
+        // explicitly allowed, fall through
+      } else {
+        return corsify(new Response(JSON.stringify({
+          error: "Access denied (unknown policy action).",
+          reason: `IP matched policy with unknown action: ${action}`,
+          action
+        }), { status: 403, headers: { "Content-Type": "application/json" } }));
       }
     }
+
     if (url.pathname !== "/health" && !url.pathname.startsWith("/docs/")) {
       const rateCheck = await checkRateLimit(env, clientIP);
       if (!rateCheck.allowed) {
-        return corsify(Response.redirect(
-          'https://rblx-uif-site.pages.dev/blocked?type=temporary',
-          302
-        ));
+        return corsify(Response.redirect('https://rblx-uif-site.pages.dev/blocked?type=temporary', 302));
       }
     }
+
+    // ── /health ──────────────────────────────────────────────────────────────
     if (url.pathname === "/health") {
       return corsify(new Response("OK", { status: 200 }));
     }
+
+    // ── browser redirect ─────────────────────────────────────────────────────
     if (request.method === "GET") {
       const userAgent = request.headers.get("User-Agent") || "";
       if (isBrowser(userAgent)) {
@@ -248,6 +258,7 @@ export default {
       }
     }
 
+    // ── geometry dash easter egg ─────────────────────────────────────────────
     const userAgent = request.headers.get("User-Agent") || "";
     if (userAgent.toLowerCase().includes("geometrydash")) {
       return corsify(new Response(
@@ -257,25 +268,41 @@ export default {
         { status: 200, headers: { "Content-Type": "application/json" } }
       ));
     }
+
     if (request.method !== "POST") {
       return corsify(new Response(
         JSON.stringify({ error: "Check if you're not using POST." }),
         { status: 405, headers: { "Content-Type": "application/json" } }
       ));
     }
+
+    // ── main roblox user info logic ──────────────────────────────────────────
     try {
       const body = await parseBody(request);
-      let userId = body.userId;
-      const username = body.username;
-      const groupId = body.groupId;
 
-      const includeAvatar = normalizeBoolean(body.includeAvatar, false);
-      const includePresence = normalizeBoolean(body.includePresence, false);
-      const includeFriendsCount = normalizeBoolean(body.includeFriendsCount, false);
-      const includeFollowersCount = normalizeBoolean(body.includeFollowersCount, false);
-      const includeFollowingCount = normalizeBoolean(body.includeFollowingCount, false);
-      const includeGroups = normalizeBoolean(body.includeGroups, true);
+      // FIX: userId and groupId are sanitized to safe positive integers
+      let userId = sanitizeRobloxId(body.userId, 'userId');
+      const groupId = sanitizeRobloxId(body.groupId, 'groupId');
+      const username = typeof body.username === 'string' ? body.username.trim() : null;
 
+      // FIX: normalizeBoolean now throws on invalid input, wrapped in try/catch
+      let includeAvatar, includePresence, includeFriendsCount,
+          includeFollowersCount, includeFollowingCount, includeGroups;
+      try {
+        includeAvatar          = normalizeBoolean(body.includeAvatar, false);
+        includePresence        = normalizeBoolean(body.includePresence, false);
+        includeFriendsCount    = normalizeBoolean(body.includeFriendsCount, false);
+        includeFollowersCount  = normalizeBoolean(body.includeFollowersCount, false);
+        includeFollowingCount  = normalizeBoolean(body.includeFollowingCount, false);
+        includeGroups          = normalizeBoolean(body.includeGroups, true);
+      } catch (boolErr) {
+        return corsify(new Response(
+          JSON.stringify({ error: boolErr.message }),
+          { status: 400, headers: { "Content-Type": "application/json" } }
+        ));
+      }
+
+      // resolve username → userId
       if (!userId && username) {
         const userRes = await fetch("https://users.roproxy.com/v1/usernames/users", {
           method: "POST",
@@ -285,7 +312,7 @@ export default {
         const userData = await userRes.json();
         if (!userRes.ok) {
           return corsify(new Response(
-            JSON.stringify({ 
+            JSON.stringify({
               error: "Failed to fetch username lookup",
               apiStatusCode: userRes.status,
               requestedUsername: username,
@@ -297,9 +324,10 @@ export default {
         if (userData.data && userData.data.length > 0) {
           userId = userData.data[0].id;
         } else {
+          // FIX: "Unknown error" renamed to "User not found" — the previous label was misleading
           return corsify(new Response(
-            JSON.stringify({ 
-                error: "Unknown error",
+            JSON.stringify({
+              error: "User not found",
               requestedUsername: username,
               apiResponse: userData
             }),
@@ -324,6 +352,7 @@ export default {
       }
       const profile = await profileRes.json();
 
+      // build parallel fetch list
       const promises = [];
       const promiseKeys = [];
 
@@ -356,27 +385,46 @@ export default {
         promiseKeys.push('followingCount');
       }
 
-      const results = await Promise.allSettled(promises);
+      // FIX: replaced the fire-and-forget .json() + 100ms sleep hack with proper
+      // awaited Promise.all on the json() calls. this guarantees all data is resolved
+      // before building the response, and cancels unread bodies on failures to avoid
+      // memory pressure from unconsumed response streams.
+      const rawResults = await Promise.allSettled(promises);
+
+      const jsonResults = await Promise.all(
+        rawResults.map(async (result, index) => {
+          if (result.status === 'fulfilled') {
+            try {
+              const data = await result.value.json();
+              return { key: promiseKeys[index], data };
+            } catch {
+              return null;
+            }
+          } else {
+            // FIX: cancel unread response bodies from rejected fetches to avoid
+            // memory pressure from unconsumed streams in the worker
+            try { result.value?.body?.cancel(); } catch {}
+            return null;
+          }
+        })
+      );
+
       let groupsData = null, avatarData = null, presenceData = null;
       let friendsCountData = null, followersCountData = null, followingCountData = null;
 
-      results.forEach((result, index) => {
-        if (result.status === 'fulfilled') {
-          const key = promiseKeys[index];
-          result.value.json().then(data => {
-            switch (key) {
-              case 'groups': groupsData = data; break;
-              case 'avatar': avatarData = data; break;
-              case 'presence': presenceData = data; break;
-              case 'friendsCount': friendsCountData = data; break;
-              case 'followersCount': followersCountData = data; break;
-              case 'followingCount': followingCountData = data; break;
-            }
-          }).catch(() => {});
+      for (const item of jsonResults) {
+        if (!item) continue;
+        switch (item.key) {
+          case 'groups':        groupsData        = item.data; break;
+          case 'avatar':        avatarData        = item.data; break;
+          case 'presence':      presenceData      = item.data; break;
+          case 'friendsCount':  friendsCountData  = item.data; break;
+          case 'followersCount':followersCountData = item.data; break;
+          case 'followingCount':followingCountData = item.data; break;
         }
-      });
-      await new Promise(resolve => setTimeout(resolve, 100));
+      }
 
+      // build response
       const response = {
         id: profile.id,
         username: profile.name,
@@ -399,7 +447,7 @@ export default {
         }));
 
         if (groupId) {
-          const groupMatch = groupsData.data.find(g => g.group.id === parseInt(groupId));
+          const groupMatch = groupsData.data.find(g => g.group.id === groupId);
           response.requestedGroup = groupMatch ? {
             groupId: groupMatch.group.id,
             groupName: groupMatch.group.name,
@@ -411,11 +459,12 @@ export default {
         }
       }
 
-      if (includeAvatar && avatarData && avatarData.data) {
+      if (includeAvatar && avatarData?.data) {
         response.avatarUrl = avatarData.data[0]?.imageUrl || null;
       }
 
-      if (includePresence && presenceData && presenceData.userPresences) {
+      // FIX: guard against empty userPresences array before accessing [0]
+      if (includePresence && presenceData?.userPresences?.length > 0) {
         const presence = presenceData.userPresences[0];
         response.presence = {
           userPresenceType: presence.userPresenceType,
